@@ -51,11 +51,12 @@ async function start() {
     const remoteJid = msg.key?.remoteJid || '';
     const fromMe = !!msg.key?.fromMe;
     const isGroup = remoteJid.endsWith('@g.us');
+    const isUser = remoteJid.endsWith('@s.whatsapp.net');
     const isBroadcast = remoteJid.endsWith('@broadcast');
     const isStatus = remoteJid === 'status@broadcast';
 
-    // Only handle group messages strictly; ignore my own, broadcasts and status
-    if (fromMe || !isGroup || isBroadcast || isStatus) return;
+    // Handle only groups and direct user chats; ignore my own, broadcasts and status
+    if (fromMe || (!isGroup && !isUser) || isBroadcast || isStatus) return;
 
     // Extract plain text
     const text = msg.message?.conversation
