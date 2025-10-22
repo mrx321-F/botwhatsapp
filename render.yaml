@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: offhours-whatsapp-bot
+    rootDir: offhours-bot
+    env: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeploy: true
+    disk:
+      name: sessions
+      mountPath: /opt/render/project/src/offhours-bot/sessions-offhours
+      sizeGB: 1
