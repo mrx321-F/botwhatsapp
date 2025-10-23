@@ -5,8 +5,8 @@
 // - Dedupe per message id; cooldown per chat 10s after sending
 
 const { makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const http = require('http');
+const QRCode = require('qrcode');
 
 const OFF_HOURS_MESSAGE = "⚠️ Fuera de Servicio. Nuestro horario de atención es de 7:00 AM a 7:00 PM. Por favor, escríbenos mañana a partir de las 8:00 AM.";
 const LUNCH_MESSAGE = "⚠️ Fuera de Servicio por almuerzo. Nuestro horario se reanuda a las 2:00 PM (12:00 PM - 2:00 PM).";
@@ -18,6 +18,7 @@ const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
+let latestQRDataUrl = null; // data:image/png;base64,...
 
 function getHourInTimeZone(tz = 'America/New_York') {
   // robust hour extraction independent of server TZ
@@ -53,8 +54,10 @@ async function start() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      console.log('Escanea el código QR para iniciar sesión');
-      qrcode.generate(qr, { small: true });
+      // Generar DataURL del QR para servirlo por HTTP en /qr
+      QRCode.toDataURL(qr)
+        .then((dataUrl) => { latestQRDataUrl = dataUrl; })
+        .catch((e) => { console.error('No se pudo generar QR DataURL:', e); latestQRDataUrl = null; });
     }
     if (connection === 'open') {
       console.log('✅ Conectado a WhatsApp');
@@ -240,11 +243,33 @@ function setupDailySchedules(sock) {
 
 start().catch((e) => console.error('Fatal error:', e));
 
-// Minimal HTTP server for Render Web Service
+// Minimal HTTP server for Render Web Service y vista de QR
 const PORT = process.env.PORT || 10000;
 http
   .createServer((req, res) => {
+    if (req.url === '/qr') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      const hasQR = !!latestQRDataUrl;
+      const body = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp QR</title>
+    <style>body{font-family:system-ui,Segoe UI,Arial;margin:24px} .card{max-width:460px;margin:auto;padding:16px;border:1px solid #ddd;border-radius:12px} img{width:100%;height:auto} .muted{color:#666}</style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Escanea el QR</h1>
+      ${hasQR ? `<img alt="QR" src="${latestQRDataUrl}" />` : `<p class="muted">No hay un QR disponible todavía. Si ya escaneaste o la sesión está activa, este mensaje es normal. Mantén esta página abierta y recarga cuando se solicite un nuevo QR.</p>`}
+      <p class="muted">Estado: ${hasQR ? 'QR listo' : 'Esperando QR'}</p>
+    </div>
+  </body>
+</html>`;
+      res.end(body);
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('offhours-bot: OK');
+    res.end('offhours-bot: OK. Visita /qr para mostrar el código QR.');
   })
   .listen(PORT, () => console.log(`HTTP server listening on port ${PORT}`));
