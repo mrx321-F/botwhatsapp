@@ -18,6 +18,11 @@ const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
+// Timing config
+const DELAY_USER_MS = 60_000;      // 60s delay por usuario
+const DELAY_GROUP_MS = 60_000;     // 60s delay por grupo (simulación humana)
+const COOLDOWN_USER_MS = 60_000;   // 60s cooldown por usuario
+const COOLDOWN_GROUP_MS = 5 * 60_000; // 5 minutos cooldown por grupo
 let latestQRDataUrl = null; // data:image/png;base64,...
 
 function getHourInTimeZone(tz = 'America/New_York') {
@@ -116,7 +121,7 @@ async function start() {
     // Outside lunch: only act if off-hours
     if (!isOffHours() && !lunchNow) return;
 
-    // Per-chat cooldown: 10 seconds after sending to this chat
+    // Per-chat cooldown (usuarios 60s, grupos 5min)
     const now = Date.now();
     const until = cooldownUntil.get(remoteJid) || 0;
     if (now < until) return;
@@ -124,13 +129,15 @@ async function start() {
     // Guard durante el delay: evita programar dos envíos en paralelo para el mismo chat
     const respUntil = respondingUntil.get(remoteJid) || 0;
     if (now < respUntil) return;
-    respondingUntil.set(remoteJid, now + 10000 + 500); // delay (10s) + margen
+    const delayMs = isGroup ? DELAY_GROUP_MS : DELAY_USER_MS;
+    respondingUntil.set(remoteJid, now + delayMs + 1000); // delay + margen
 
     try {
-      await sleep(10000);
+      await sleep(delayMs);
       const messageToSend = (lunchNow && isGroup) ? LUNCH_MESSAGE : OFF_HOURS_MESSAGE;
       await sock.sendMessage(remoteJid, { text: messageToSend });
-      cooldownUntil.set(remoteJid, Date.now() + 10_000);
+      const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
+      cooldownUntil.set(remoteJid, Date.now() + cd);
     } catch (e) {
       console.error('Error enviando mensaje:', e);
     } finally {
@@ -201,7 +208,11 @@ async function sendOffHoursToPreparedGroups(sock) {
     if (!jid.endsWith('@g.us')) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
-      await sleep(800); // pequeño espaciamiento para evitar rate limits
+      // Pausa aleatoria entre 1 y 9 minutos para simular envío humano por bloques
+      const mins = Math.floor(Math.random() * 9) + 1; // 1..9
+      const pauseMs = mins * 60_000;
+      console.log(`Pausa de ${mins} minuto(s) antes del próximo grupo...`);
+      await sleep(pauseMs);
     } catch (e) {
       console.error(`Error enviando a grupo ${jid}:`, e);
     }
