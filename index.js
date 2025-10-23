@@ -21,8 +21,8 @@ let sendTimer = null;
 // Timing config
 const DELAY_USER_MS = 60_000;      // 60s delay por usuario
 const DELAY_GROUP_MS = 60_000;     // 60s delay por grupo (simulación humana)
-const COOLDOWN_USER_MS = 60_000;   // 60s cooldown por usuario
-const COOLDOWN_GROUP_MS = 5 * 60_000; // 5 minutos cooldown por grupo
+const COOLDOWN_USER_MS = 10_000;   // 10s cooldown por usuario
+const COOLDOWN_GROUP_MS = 45_000;  // 45s cooldown por grupo
 let latestQRDataUrl = null; // data:image/png;base64,...
 
 function getHourInTimeZone(tz = 'America/New_York') {
@@ -116,9 +116,7 @@ async function start() {
 
     // Only act during off-hours or lunch break
     const lunchNow = isLunchBreak();
-    // Lunch message applies to groups only; if lunch and not group, do nothing
-    if (lunchNow && !isGroup) return;
-    // Outside lunch: only act if off-hours
+    // Durante el almuerzo también respondemos a usuarios; fuera del almuerzo solo si es fuera de horario
     if (!isOffHours() && !lunchNow) return;
 
     // Per-chat cooldown (usuarios 60s, grupos 5min)
@@ -134,7 +132,7 @@ async function start() {
 
     try {
       await sleep(delayMs);
-      const messageToSend = (lunchNow && isGroup) ? LUNCH_MESSAGE : OFF_HOURS_MESSAGE;
+      const messageToSend = lunchNow ? LUNCH_MESSAGE : OFF_HOURS_MESSAGE;
       await sock.sendMessage(remoteJid, { text: messageToSend });
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
@@ -208,11 +206,9 @@ async function sendOffHoursToPreparedGroups(sock) {
     if (!jid.endsWith('@g.us')) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
-      // Pausa aleatoria entre 1 y 9 minutos para simular envío humano por bloques
-      const mins = Math.floor(Math.random() * 9) + 1; // 1..9
-      const pauseMs = mins * 60_000;
-      console.log(`Pausa de ${mins} minuto(s) antes del próximo grupo...`);
-      await sleep(pauseMs);
+      // Pausa fija de 45 segundos entre grupos para limitar el ritmo de envío
+      console.log('Pausa de 45 segundos antes del próximo grupo...');
+      await sleep(45_000);
     } catch (e) {
       console.error(`Error enviando a grupo ${jid}:`, e);
     }
