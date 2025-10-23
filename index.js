@@ -18,6 +18,7 @@ const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 // Track per-window sends to groups (avoid repeats in lunch/off-hours windows)
 // Map<windowKey, Set<groupJid>>
 const sentInWindow = new Map();
+const ALLOWED_GROUPS = new Set([]); //aqui va la lista :v
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
@@ -123,6 +124,7 @@ async function start() {
     const lunchNow = isLunchBreak();
     // Lunch message applies to groups only; if lunch and not group, do nothing
     if (lunchNow && !isGroup) return;
+    if (isGroup && !isAllowedGroup(remoteJid)) return;
     // Outside lunch: only act if off-hours
     if (!isOffHours() && !lunchNow) return;
 
@@ -225,6 +227,12 @@ function markGroupSentInWindow(windowKey, groupJid) {
   sentInWindow.get(windowKey).add(groupJid);
 }
 
+function isAllowedGroup(jid) {
+  if (!jid || !jid.endsWith('@g.us')) return false;
+  if (ALLOWED_GROUPS.size === 0) return true;
+  return ALLOWED_GROUPS.has(jid);
+}
+
 function msUntilNY(targetHour, targetMinute) {
   const { hh, mm, ss } = getNYParts();
   const nowMins = hh * 60 + mm;
@@ -240,7 +248,10 @@ async function prepareGroups(sock) {
   try {
     const dayKey = nyDayKey();
     const participating = await sock.groupFetchAllParticipating();
-    const jids = Object.keys(participating || {});
+    let jids = Object.keys(participating || {});
+    if (ALLOWED_GROUPS.size > 0) {
+      jids = jids.filter((j) => isAllowedGroup(j));
+    }
     preparedGroupsForDay = { dayKey, jids };
     console.log(`Preparado envío fuera de servicio para ${jids.length} grupos (día ${dayKey}).`);
   } catch (e) {
@@ -286,6 +297,7 @@ async function sendOffHoursToPreparedGroups(sock) {
   const tonightKey = `off-${nyDayKey()}`;
   for (const jid of jids) {
     if (!jid.endsWith('@g.us')) continue;
+    if (!isAllowedGroup(jid)) continue;
     if (hasGroupSentInWindow(tonightKey, jid)) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
