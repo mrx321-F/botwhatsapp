@@ -15,6 +15,9 @@ const LUNCH_MESSAGE = "⚠️ Fuera de Servicio por almuerzo. Nuestro horario se
 const processedMessageIds = new Set(); // msg.key.id
 const cooldownUntil = new Map(); // remoteJid -> epoch ms
 const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
+// Track per-window sends to groups (avoid repeats in lunch/off-hours windows)
+// Map<windowKey, Set<groupJid>>
+const sentInWindow = new Map();
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
@@ -121,6 +124,13 @@ async function start() {
     // Outside lunch: only act if off-hours
     if (!isOffHours() && !lunchNow) return;
 
+    // One-per-window for groups (lunch/off-hours)
+    if (isGroup) {
+      const windowKey = lunchNow ? currentLunchWindowKey() : currentOffhoursWindowKey();
+      if (hasGroupSentInWindow(windowKey, remoteJid)) return;
+      // We'll mark after successful send
+    }
+
     // Per-chat cooldown (usuarios 60s, grupos 5min)
     const now = Date.now();
     const until = cooldownUntil.get(remoteJid) || 0;
@@ -138,6 +148,10 @@ async function start() {
       await sock.sendMessage(remoteJid, { text: messageToSend });
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
+      if (isGroup) {
+        const windowKey = lunchNow ? currentLunchWindowKey() : currentOffhoursWindowKey();
+        markGroupSentInWindow(windowKey, remoteJid);
+      }
     } catch (e) {
       console.error('Error enviando mensaje:', e);
     } finally {
@@ -172,6 +186,43 @@ function nyDayKey() {
   return `${y}${String(m).padStart(2, '0')}${String(d).padStart(2, '0')}`;
 }
 
+function prevNyDayKey() {
+  const { y, m, d } = getNYParts();
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const parts = fmt.formatToParts(date).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  return `${parts.year}${parts.month}${parts.day}`;
+}
+
+// Off-hours window key: "off-YYYYMMDD" donde YYYYMMDD es el día de inicio de la noche
+function currentOffhoursWindowKey() {
+  const h = getHourInTimeZone('America/New_York');
+  if (h >= 19) return `off-${nyDayKey()}`;      // noche que empieza hoy
+  if (h < 8) return `off-${prevNyDayKey()}`;    // madrugada que empezó ayer
+  return null;
+}
+
+// Lunch window key: "lunch-YYYYMMDD" (del día actual)
+function currentLunchWindowKey() {
+  return isLunchBreak() ? `lunch-${nyDayKey()}` : null;
+}
+
+function hasGroupSentInWindow(windowKey, groupJid) {
+  if (!windowKey) return false;
+  const set = sentInWindow.get(windowKey);
+  return !!set && set.has(groupJid);
+}
+
+function markGroupSentInWindow(windowKey, groupJid) {
+  if (!windowKey) return;
+  if (!sentInWindow.has(windowKey)) sentInWindow.set(windowKey, new Set());
+  sentInWindow.get(windowKey).add(groupJid);
+}
+
 function msUntilNY(targetHour, targetMinute) {
   const { hh, mm, ss } = getNYParts();
   const nowMins = hh * 60 + mm;
@@ -204,10 +255,14 @@ async function sendOffHoursToPreparedGroups(sock) {
   }
   const jids = preparedGroupsForDay?.jids || [];
   console.log(`Enviando fuera de servicio a ${jids.length} grupos (día ${dayKey}).`);
+  // Esta alerta de las 18:15 cuenta como la única del bloque nocturno que inicia hoy
+  const tonightKey = `off-${nyDayKey()}`;
   for (const jid of jids) {
     if (!jid.endsWith('@g.us')) continue;
+    if (hasGroupSentInWindow(tonightKey, jid)) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
+      markGroupSentInWindow(tonightKey, jid);
       // Pausa aleatoria entre 1 y 9 minutos para simular envío humano por bloques
       const mins = Math.floor(Math.random() * 9) + 1; // 1..9
       const pauseMs = mins * 60_000;
