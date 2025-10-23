@@ -21,6 +21,8 @@ const sentInWindow = new Map();
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
+let lunchPrepareTimer = null;
+let lunchSendTimer = null;
 // Timing config
 const DELAY_USER_MS = 60_000;      // 60s delay por usuario
 const DELAY_GROUP_MS = 60_000;     // 60s delay por grupo (simulación humana)
@@ -245,6 +247,31 @@ async function prepareGroups(sock) {
     console.error('Error preparando grupos:', e);
     preparedGroupsForDay = { dayKey: nyDayKey(), jids: [] };
   }
+
+  // -------- Almuerzo: preparar 11:45 y enviar 12:00 con pausas --------
+  const msToLunchPrepare = msUntilNY(11, 45);
+  const msToLunchSend = msUntilNY(12, 0);
+  lunchPrepareTimer = setTimeout(async () => {
+    await prepareGroups(sock);
+  }, msToLunchPrepare);
+  lunchSendTimer = setTimeout(async () => {
+    await sendLunchToPreparedGroups(sock);
+    setupDailySchedules(sock);
+  }, msToLunchSend);
+
+  // Si el proceso reinicia entre 12:00 y 12:15, preparar y agendar envío a las 12:15
+  const { hh, mm } = getNYParts();
+  if (hh === 12 && mm < 15) {
+    (async () => {
+      await prepareGroups(sock);
+      const msToLSend = msUntilNY(12, 15);
+      if (lunchSendTimer) clearTimeout(lunchSendTimer);
+      lunchSendTimer = setTimeout(async () => {
+        await sendLunchToPreparedGroups(sock);
+        setupDailySchedules(sock);
+      }, msToLSend);
+    })();
+  }
 }
 
 async function sendOffHoursToPreparedGroups(sock) {
@@ -278,16 +305,17 @@ function setupDailySchedules(sock) {
   // Clear existing timers if any
   if (prepareTimer) clearTimeout(prepareTimer);
   if (sendTimer) clearTimeout(sendTimer);
+  if (lunchPrepareTimer) clearTimeout(lunchPrepareTimer);
+  if (lunchSendTimer) clearTimeout(lunchSendTimer);
 
-  // Schedule prepare at 18:00 NY
+  // Schedule prepare at 18:00 and send at 18:15 NY time
   const msToPrepare = msUntilNY(18, 0);
+  const msToSend = msUntilNY(18, 15);
   prepareTimer = setTimeout(async () => {
     await prepareGroups(sock);
     // After preparing, schedule sending at 18:15 NY for the same day
-    const msToSend = msUntilNY(18, 15);
     sendTimer = setTimeout(async () => {
       await sendOffHoursToPreparedGroups(sock);
-      // Reschedule next day after sending
       setupDailySchedules(sock);
     }, msToSend);
   }, msToPrepare);
