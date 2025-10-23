@@ -18,9 +18,6 @@ const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 // Track per-window sends to groups (avoid repeats in lunch/off-hours windows)
 // Map<windowKey, Set<groupJid>>
 const sentInWindow = new Map();
-// Grupos seleccionados para que el bot reaccione (whitelist)
-const ALLOWED_GROUPS = new Set();
-let currentSock = null; // para endpoints HTTP
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let prepareTimer = null;
 let sendTimer = null;
@@ -63,7 +60,6 @@ async function start() {
     auth: state,
     browser: ['OffHours Bot', 'Chrome', '1.0.0']
   });
-  currentSock = sock;
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -127,8 +123,6 @@ async function start() {
     const lunchNow = isLunchBreak();
     // Lunch message applies to groups only; if lunch and not group, do nothing
     if (lunchNow && !isGroup) return;
-    // Si es grupo y no está en la lista seleccionada, no reaccionar
-    if (isGroup && !ALLOWED_GROUPS.has(remoteJid)) return;
     // Outside lunch: only act if off-hours
     if (!isOffHours() && !lunchNow) return;
 
@@ -247,12 +241,6 @@ async function prepareGroups(sock) {
     const dayKey = nyDayKey();
     const participating = await sock.groupFetchAllParticipating();
     const jids = Object.keys(participating || {});
-    // Listar en consola los grupos detectados
-    console.log('Listado de grupos participando:');
-    jids.forEach((jid) => {
-      const name = participating[jid]?.subject || '(sin nombre)';
-      console.log(`[group] ${name} | ${jid}`);
-    });
     preparedGroupsForDay = { dayKey, jids };
     console.log(`Preparado envío fuera de servicio para ${jids.length} grupos (día ${dayKey}).`);
   } catch (e) {
@@ -298,7 +286,6 @@ async function sendOffHoursToPreparedGroups(sock) {
   const tonightKey = `off-${nyDayKey()}`;
   for (const jid of jids) {
     if (!jid.endsWith('@g.us')) continue;
-    if (!ALLOWED_GROUPS.has(jid)) continue; // solo grupos seleccionados
     if (hasGroupSentInWindow(tonightKey, jid)) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
@@ -354,8 +341,6 @@ start().catch((e) => console.error('Fatal error:', e));
 const PORT = process.env.PORT || 10000;
 http
   .createServer((req, res) => {
-    // Endpoints auxiliares
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     if (req.url === '/qr') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       const hasQR = !!latestQRDataUrl;
@@ -376,40 +361,6 @@ http
   </body>
 </html>`;
       res.end(body);
-      return;
-    } else if (req.url === '/groups' && req.method === 'GET') {
-      // Lista de grupos actuales (nombre y JID)
-      (async () => {
-        try {
-          if (!currentSock) { res.writeHead(503); res.end('not connected'); return; }
-          const participating = await currentSock.groupFetchAllParticipating();
-          const jids = Object.keys(participating || {});
-          const data = jids.map((jid) => ({ jid, name: participating[jid]?.subject || '(sin nombre)' }));
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ groups: data }));
-        } catch (e) {
-          console.error('GET /groups error:', e);
-          res.writeHead(500); res.end('error');
-        }
-      })();
-      return;
-    } else if (req.url === '/allow' && req.method === 'POST') {
-      // Agrega un grupo a la whitelist
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; if (body.length > 1e6) req.destroy(); });
-      req.on('end', () => {
-        try {
-          const json = JSON.parse(body || '{}');
-          const jid = json?.jid;
-          if (typeof jid !== 'string' || !jid.endsWith('@g.us')) { res.writeHead(400); res.end('bad jid'); return; }
-          ALLOWED_GROUPS.add(jid);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, size: ALLOWED_GROUPS.size }));
-        } catch (e) {
-          console.error('POST /allow error:', e);
-          res.writeHead(400); res.end('bad request');
-        }
-      });
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
