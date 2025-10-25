@@ -16,13 +16,14 @@ const processedMessageIds = new Set(); // msg.key.id
 const cooldownUntil = new Map(); // remoteJid -> epoch ms
 const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
+let repliedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> }
 let prepareTimer = null;
 let sendTimer = null;
 // Timing config
 const DELAY_USER_MS = 60_000;      // 60s delay por usuario
 const DELAY_GROUP_MS = 60_000;     // 60s delay por grupo (simulación humana)
 const COOLDOWN_USER_MS = 10_000;   // 10s cooldown por usuario
-const COOLDOWN_GROUP_MS = 45_000;  // 45s cooldown por grupo
+const COOLDOWN_GROUP_MS = 15_000;  // 45s cooldown por grupo
 let latestQRDataUrl = null; // data:image/png;base64,...
 
 function getHourInTimeZone(tz = 'America/New_York') {
@@ -35,7 +36,7 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 12 || h >= 18;
+  return h < 8 || h >= 18;
 }
 
 function isLunchBreak() {
@@ -119,6 +120,12 @@ async function start() {
     // Durante el almuerzo también respondemos a usuarios; fuera del almuerzo solo si es fuera de horario
     if (!isOffHours() && !lunchNow) return;
 
+    // One-per-group-per-day gating for groups
+    if (isGroup) {
+      ensureRepliedGroupsForToday();
+      if (repliedGroupsForDay.set.has(remoteJid)) return;
+    }
+
     // Per-chat cooldown (usuarios 60s, grupos 5min)
     const now = Date.now();
     const until = cooldownUntil.get(remoteJid) || 0;
@@ -136,6 +143,10 @@ async function start() {
       await sock.sendMessage(remoteJid, { text: messageToSend });
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
+      if (isGroup) {
+        ensureRepliedGroupsForToday();
+        repliedGroupsForDay.set.add(remoteJid);
+      }
     } catch (e) {
       console.error('Error enviando mensaje:', e);
     } finally {
@@ -168,6 +179,13 @@ function getNYParts() {
 function nyDayKey() {
   const { y, m, d } = getNYParts();
   return `${y}${String(m).padStart(2, '0')}${String(d).padStart(2, '0')}`;
+}
+
+function ensureRepliedGroupsForToday() {
+  const dayKey = nyDayKey();
+  if (!repliedGroupsForDay || repliedGroupsForDay.dayKey !== dayKey) {
+    repliedGroupsForDay = { dayKey, set: new Set() };
+  }
 }
 
 function msUntilNY(targetHour, targetMinute) {
@@ -206,9 +224,14 @@ async function sendOffHoursToPreparedGroups(sock) {
     if (!jid.endsWith('@g.us')) continue;
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
-      // Pausa fija de 45 segundos entre grupos para limitar el ritmo de envío
-      console.log('Pausa de 45 segundos antes del próximo grupo...');
-      await sleep(45_000);
+      // Marca como respondido por el día para evitar duplicados posteriores
+      ensureRepliedGroupsForToday();
+      repliedGroupsForDay.set.add(jid);
+      // Pausa aleatoria de 1 a 5 minutos entre grupos
+      const mins = Math.floor(Math.random() * 5) + 1; // 1..5
+      const pauseMs = mins * 60_000;
+      console.log(`Pausa de ${mins} minuto(s) antes del próximo grupo...`);
+      await sleep(pauseMs);
     } catch (e) {
       console.error(`Error enviando a grupo ${jid}:`, e);
     }
