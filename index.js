@@ -37,12 +37,12 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 8 || h >= 18;
+  return h < 12 || h >= 18;
 }
 
 function isLunchBreak() {
   const h = getHourInTimeZone('America/New_York');
-  return h >= 9 && h < 14;
+  return h >= 12 && h < 14;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -107,25 +107,21 @@ async function start() {
       }
     }
 
-    // Extract only real text (ignore stickers/medios/captions). Consider wrappers.
-    const text =
-      // Top-level text
-      msg.message?.conversation
+    // Extract plain text (conversation, extended, captions, buttons/list), including under ephemeral
+    const text = msg.message?.conversation
       || msg.message?.extendedTextMessage?.text
-      // Ephemeral wrapper with text
+      || msg.message?.imageMessage?.caption
+      || msg.message?.videoMessage?.caption
+      || msg.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.listResponseMessage?.title
       || msg.message?.ephemeralMessage?.message?.conversation
       || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.text
-      // View-once wrapper with text
-      || msg.message?.viewOnceMessageV2?.message?.conversation
-      || msg.message?.viewOnceMessageV2?.message?.extendedTextMessage?.text
-      // Ephemeral + view-once nested with text
-      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.conversation
-      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.extendedTextMessage?.text
+      || msg.message?.ephemeralMessage?.message?.imageMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
       || '';
 
-    if (!text || !String(text).trim()) {
+    if (!text) {
       if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
-      return;
     }
 
     // Only act during off-hours or lunch break
@@ -134,6 +130,7 @@ async function start() {
     const offNow = isOffHours();
     if (!offNow && !lunchNow) {
       if (isGroup) console.log('[reactive] En horario, no se responde. JID:', remoteJid);
+      return;
     }
 
     // One-per-group-per-day gating for groups (reactive only)
