@@ -46,7 +46,7 @@ function isOffHours() {
 
 function isLunchBreak() {
   const h = getHourInTimeZone('America/New_York');
-  return h >= 14 && h < 16;
+  return h >= 12 && h < 16;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
