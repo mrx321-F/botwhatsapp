@@ -107,17 +107,50 @@ async function start() {
       }
     }
 
-    // Extract plain text (conversation, extended, captions, buttons/list), including under ephemeral
-    const text = msg.message?.conversation
+    // Extract plain text (conversation, extended, captions, buttons/list), including under ephemeral/view-once wrappers
+    const text =
+      // Top-level simple text
+      msg.message?.conversation
       || msg.message?.extendedTextMessage?.text
+      // Captions (top-level)
       || msg.message?.imageMessage?.caption
       || msg.message?.videoMessage?.caption
+      || msg.message?.documentMessage?.caption
+      // Button/list replies (top-level)
       || msg.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.templateButtonReplyMessage?.selectedDisplayText
       || msg.message?.listResponseMessage?.title
+      || msg.message?.interactiveResponseMessage?.body?.text
+      // Ephemeral wrapper
       || msg.message?.ephemeralMessage?.message?.conversation
       || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.text
       || msg.message?.ephemeralMessage?.message?.imageMessage?.caption
       || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.documentMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.ephemeralMessage?.message?.templateButtonReplyMessage?.selectedDisplayText
+      || msg.message?.ephemeralMessage?.message?.listResponseMessage?.title
+      || msg.message?.ephemeralMessage?.message?.interactiveResponseMessage?.body?.text
+      // viewOnce wrapper (some messages arrive wrapped here)
+      || msg.message?.viewOnceMessageV2?.message?.conversation
+      || msg.message?.viewOnceMessageV2?.message?.extendedTextMessage?.text
+      || msg.message?.viewOnceMessageV2?.message?.imageMessage?.caption
+      || msg.message?.viewOnceMessageV2?.message?.videoMessage?.caption
+      || msg.message?.viewOnceMessageV2?.message?.documentMessage?.caption
+      || msg.message?.viewOnceMessageV2?.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.viewOnceMessageV2?.message?.templateButtonReplyMessage?.selectedDisplayText
+      || msg.message?.viewOnceMessageV2?.message?.listResponseMessage?.title
+      || msg.message?.viewOnceMessageV2?.message?.interactiveResponseMessage?.body?.text
+      // Ephemeral + viewOnce nested (rare but possible)
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.conversation
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.extendedTextMessage?.text
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.imageMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.videoMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.documentMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.templateButtonReplyMessage?.selectedDisplayText
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.listResponseMessage?.title
+      || msg.message?.ephemeralMessage?.message?.viewOnceMessageV2?.message?.interactiveResponseMessage?.body?.text
       || '';
 
     if (!text) {
