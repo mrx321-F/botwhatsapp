@@ -16,7 +16,7 @@ const processedMessageIds = new Set(); // msg.key.id
 const cooldownUntil = new Map(); // remoteJid -> epoch ms
 const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
-let repliedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> }
+let repliedGroupsReactiveForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> }
 let prepareTimer = null;
 let sendTimer = null;
 // Timing config
@@ -36,7 +36,7 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 8 || h >= 18;
+  return h < 10 || h >= 18;
 }
 
 function isLunchBreak() {
@@ -106,11 +106,17 @@ async function start() {
       }
     }
 
-    // Extract plain text
+    // Extract plain text (conversation, extended, captions, buttons/list), including under ephemeral
     const text = msg.message?.conversation
       || msg.message?.extendedTextMessage?.text
-      || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.text
+      || msg.message?.imageMessage?.caption
+      || msg.message?.videoMessage?.caption
+      || msg.message?.buttonsResponseMessage?.selectedDisplayText
+      || msg.message?.listResponseMessage?.title
       || msg.message?.ephemeralMessage?.message?.conversation
+      || msg.message?.ephemeralMessage?.message?.extendedTextMessage?.text
+      || msg.message?.ephemeralMessage?.message?.imageMessage?.caption
+      || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
       || '';
 
     if (!text) return;
@@ -120,10 +126,10 @@ async function start() {
     // Durante el almuerzo también respondemos a usuarios; fuera del almuerzo solo si es fuera de horario
     if (!isOffHours() && !lunchNow) return;
 
-    // One-per-group-per-day gating for groups
+    // One-per-group-per-day gating for groups (reactive only)
     if (isGroup) {
-      ensureRepliedGroupsForToday();
-      if (repliedGroupsForDay.set.has(remoteJid)) return;
+      ensureReactiveGroupsForToday();
+      if (repliedGroupsReactiveForDay.set.has(remoteJid)) return;
     }
 
     // Per-chat cooldown (usuarios 60s, grupos 5min)
@@ -144,8 +150,8 @@ async function start() {
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
       if (isGroup) {
-        ensureRepliedGroupsForToday();
-        repliedGroupsForDay.set.add(remoteJid);
+        ensureReactiveGroupsForToday();
+        repliedGroupsReactiveForDay.set.add(remoteJid);
       }
     } catch (e) {
       console.error('Error enviando mensaje:', e);
