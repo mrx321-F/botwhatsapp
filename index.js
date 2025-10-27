@@ -6,9 +6,10 @@
 
 const { makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const http = require('http');
+const fs = require('fs');
 const QRCode = require('qrcode');
 
-const OFF_HOURS_MESSAGE = "⚠️ Fuera de Servicio. Nuestro horario de atención es de 7:00 AM a 7:00 PM. Por favor, escríbenos mañana a partir de las 8:00 AM.";
+const OFF_HOURS_MESSAGE = "⚠️ Fuera de Servicio. Nuestro horario de atención es de 8:00 AM a 6:00 PM. Por favor, escríbenos mañana a partir de las 8:00 AM.";
 const LUNCH_MESSAGE = "⚠️ Fuera de Servicio por almuerzo. Nuestro horario se reanuda a las 2:00 PM (12:00 PM - 2:00 PM).";
 
 // In-memory state for dedupe and cooldown
@@ -26,6 +27,9 @@ const DELAY_GROUP_MS = 60_000;     // 60s delay por grupo (simulación humana)
 const COOLDOWN_USER_MS = 10_000;   // 10s cooldown por usuario
 const COOLDOWN_GROUP_MS = 15_000;  // 45s cooldown por grupo
 let latestQRDataUrl = null; // data:image/png;base64,...
+let currentSock = null; // reference to active socket for admin API
+let whitelist = new Set(); // group jids allowed; empty => no restriction
+let lastGroupsCache = { dayKey: null, list: [] }; // cache of { id, name }
 
 function getHourInTimeZone(tz = 'America/New_York') {
   // robust hour extraction independent of server TZ
@@ -37,7 +41,7 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 12 || h >= 18;
+  return h < 8 || h >= 18;
 }
 
 function isLunchBreak() {
@@ -57,6 +61,7 @@ async function start() {
     auth: state,
     browser: ['OffHours Bot', 'Chrome', '1.0.0']
   });
+  currentSock = sock;
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -120,8 +125,14 @@ async function start() {
       || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
       || '';
 
-    if (!text) {
+    if (!text || !String(text).trim()) {
       if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
+    }
+
+    // If group whitelist is active, skip early when group is not allowed
+    if (isGroup && whitelist.size > 0 && !whitelist.has(remoteJid)) {
+      console.log('[reactive] Grupo no permitido por whitelist:', remoteJid);
+      return;
     }
 
     // Only act during off-hours or lunch break
@@ -236,6 +247,9 @@ async function prepareGroups(sock) {
     const jids = Object.keys(participating || {});
     preparedGroupsForDay = { dayKey, jids };
     console.log(`Preparado envío fuera de servicio para ${jids.length} grupos (día ${dayKey}).`);
+    // also refresh name cache for admin UI
+    const list = jids.map((jid) => ({ id: jid, name: participating[jid]?.subject || jid }));
+    lastGroupsCache = { dayKey, list };
   } catch (e) {
     console.error('Error preparando grupos:', e);
     preparedGroupsForDay = { dayKey: nyDayKey(), jids: [] };
@@ -252,6 +266,10 @@ async function sendOffHoursToPreparedGroups(sock) {
   console.log(`Enviando fuera de servicio a ${jids.length} grupos (día ${dayKey}).`);
   for (const jid of jids) {
     if (!jid.endsWith('@g.us')) continue;
+    if (whitelist.size > 0 && !whitelist.has(jid)) {
+      console.log('[broadcast] Grupo omitido por whitelist:', jid);
+      continue;
+    }
     try {
       await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
       // Marca como respondido por el día para evitar duplicados posteriores
@@ -329,8 +347,65 @@ http
       res.end(body);
       return;
     }
+    // Admin UI static
+    if (req.url === '/admin' || req.url === '/admin/') {
+      try {
+        const html = fs.readFileSync(__dirname + '/admin.html', 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      } catch (e) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('admin.html no encontrado');
+      }
+      return;
+    }
+    // API: listar grupos
+    if (req.url === '/api/groups' && req.method === 'GET') {
+      (async () => {
+        try {
+          const dayKey = nyDayKey();
+          if (!lastGroupsCache.list.length || lastGroupsCache.dayKey !== dayKey) {
+            if (currentSock) {
+              const participating = await currentSock.groupFetchAllParticipating();
+              const jids = Object.keys(participating || {});
+              lastGroupsCache = { dayKey, list: jids.map((jid) => ({ id: jid, name: participating[jid]?.subject || jid })) };
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ groups: lastGroupsCache.list }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'failed_groups', details: String(e) }));
+        }
+      })();
+      return;
+    }
+    // API: obtener whitelist
+    if (req.url === '/api/whitelist' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jids: Array.from(whitelist) }));
+      return;
+    }
+    // API: guardar whitelist
+    if (req.url === '/api/whitelist' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body || '{}');
+          const jids = Array.isArray(data.jids) ? data.jids.filter((x) => typeof x === 'string' && x.endsWith('@g.us')) : [];
+          whitelist = new Set(jids);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, count: whitelist.size }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'bad_json', details: String(e) }));
+        }
+      });
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('offhours-bot: OK. Visita /qr para mostrar el código QR.');
+    res.end('offhours-bot: OK. Visita /qr para QR o /admin para panel.');
   })
   .listen(PORT, () => console.log(`HTTP server listening on port ${PORT}`));
     

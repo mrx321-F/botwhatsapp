@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Panel Admin - Offhours Bot</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body{font-family: system-ui, Segoe UI, Arial; margin: 24px;}
+    .container{max-width: 960px; margin: 0 auto;}
+    .card{border:1px solid #ddd; border-radius:12px; padding:16px; margin-bottom:16px;}
+    .row{display:flex; gap:16px; align-items:center; flex-wrap:wrap}
+    .muted{color:#666}
+    .actions{display:flex; gap:8px}
+    .list{max-height: 480px; overflow:auto; border:1px solid #eee; border-radius:8px; padding:8px}
+    .item{display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid #f0f0f0}
+    .item:last-child{border-bottom:none}
+    .tag{display:inline-block; padding:2px 6px; border:1px solid #ccc; border-radius:999px; font-size:12px}
+    button{padding:8px 12px; border-radius:8px; border:1px solid #ccc; background:#f7f7f7; cursor:pointer}
+    button.primary{background:#2563eb; color:#fff; border-color:#2563eb}
+    button:disabled{opacity:.5; cursor:not-allowed}
+    .grid{display:grid; grid-template-columns: 1fr 1fr; gap:16px}
+    @media (max-width: 720px){ .grid{grid-template-columns:1fr} }
+    .status{font-size: 13px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Panel de Administración</h1>
+    <p class="muted">Administra los grupos permitidos (whitelist). El bot solo enviará mensajes en los grupos seleccionados cuando la whitelist no esté vacía.</p>
+
+    <div class="card">
+      <div class="row">
+        <button id="refresh" title="Refrescar lista de grupos">Refrescar grupos</button>
+        <button id="selectAll">Seleccionar todos</button>
+        <button id="clearAll">Limpiar selección</button>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Grupos</h2>
+        <div id="groups" class="list" role="listbox" aria-label="Lista de grupos"></div>
+      </div>
+      <div class="card">
+        <h2>Whitelist</h2>
+        <p class="muted">Los grupos marcados forman parte de la whitelist. Presiona Guardar para aplicar.</p>
+        <div class="row actions">
+          <button id="save" class="primary">Guardar whitelist</button>
+          <button id="load">Cargar whitelist</button>
+        </div>
+        <div id="whitelistPreview" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const el = (sel) => document.querySelector(sel);
+    const groupsEl = el('#groups');
+    const statusEl = el('#status');
+    const previewEl = el('#whitelistPreview');
+
+    function setStatus(text, ok=true){
+      statusEl.textContent = text || '';
+      statusEl.style.color = ok ? 'inherit' : '#b91c1c';
+    }
+
+    function groupItemTemplate(g){
+      const id = `chk-${btoa(g.id).replace(/=/g,'')}`;
+      return `<div class="item">
+        <input type="checkbox" id="${id}" data-jid="${g.id}" />
+        <label for="${id}" style="flex:1 1 auto">
+          <div><strong>${escapeHtml(g.name || g.id)}</strong></div>
+          <div class="muted" style="font-size:12px">${g.id}</div>
+        </label>
+        <span class="tag">grupo</span>
+      </div>`
+    }
+
+    function escapeHtml(s){
+      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]));
+    }
+
+    async function fetchGroups(){
+      setStatus('Cargando grupos...');
+      try {
+        const res = await fetch('/api/groups');
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        const groups = Array.isArray(data.groups) ? data.groups : [];
+        groupsEl.innerHTML = groups.map(groupItemTemplate).join('');
+        setStatus(`Se cargaron ${groups.length} grupos.`);
+        // Marcar según whitelist actual
+        const wl = await fetchWhitelist();
+        applyWhitelistToUI(wl);
+      } catch(e){
+        console.error(e);
+        setStatus('Error cargando grupos: '+e.message, false);
+      }
+    }
+
+    async function fetchWhitelist(){
+      try {
+        const res = await fetch('/api/whitelist');
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        return Array.isArray(data.jids) ? data.jids : [];
+      } catch(e){
+        console.error(e);
+        return [];
+      }
+    }
+
+    function applyWhitelistToUI(wl){
+      const set = new Set(wl);
+      groupsEl.querySelectorAll('input[type="checkbox"]').forEach(chk => {
+        const jid = chk.getAttribute('data-jid');
+        chk.checked = set.has(jid);
+      });
+      renderWhitelistPreview();
+    }
+
+    function renderWhitelistPreview(){
+      const selected = getSelectedJids();
+      if(!selected.length){
+        previewEl.innerHTML = '<p class="muted">No hay grupos en whitelist (sin restricción). El bot responderá en todos los grupos.</p>';
+      } else {
+        previewEl.innerHTML = '<ul>' + selected.map(j => `<li><code>${escapeHtml(j)}</code></li>`).join('') + '</ul>';
+      }
+    }
+
+    function getSelectedJids(){
+      return Array.from(groupsEl.querySelectorAll('input[type="checkbox"]:checked')).map(chk => chk.getAttribute('data-jid'));
+    }
+
+    async function saveWhitelist(){
+      const jids = getSelectedJids();
+      setStatus('Guardando whitelist...');
+      try {
+        const res = await fetch('/api/whitelist', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ jids })
+        });
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        setStatus(`Whitelist guardada. ${data.count || 0} grupo(s).`);
+      } catch(e){
+        console.error(e);
+        setStatus('Error guardando whitelist: '+e.message, false);
+      }
+    }
+
+    // UI events
+    el('#refresh').addEventListener('click', fetchGroups);
+    el('#save').addEventListener('click', saveWhitelist);
+    el('#load').addEventListener('click', async () => applyWhitelistToUI(await fetchWhitelist()));
+    el('#selectAll').addEventListener('click', () => {
+      groupsEl.querySelectorAll('input[type="checkbox"]').forEach(chk => chk.checked = true);
+      renderWhitelistPreview();
+    });
+    el('#clearAll').addEventListener('click', () => {
+      groupsEl.querySelectorAll('input[type="checkbox"]').forEach(chk => chk.checked = false);
+      renderWhitelistPreview();
+    });
+    groupsEl.addEventListener('change', renderWhitelistPreview);
+
+    // First load
+    fetchGroups();
+  </script>
+</body>
+</html>
