@@ -17,6 +17,7 @@ const cooldownUntil = new Map(); // remoteJid -> epoch ms
 const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
 let repliedGroupsReactiveForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> }
+let repliedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> } (broadcast tracking only)
 let prepareTimer = null;
 let sendTimer = null;
 // Timing config
@@ -36,12 +37,12 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 10 || h >= 18;
+  return h < 8 || h >= 18;
 }
 
 function isLunchBreak() {
   const h = getHourInTimeZone('America/New_York');
-  return h >= 12 && h < 14;
+  return h >= 9 && h < 14;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -119,33 +120,50 @@ async function start() {
       || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
       || '';
 
-    if (!text) return;
+    if (!text) {
+      if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
+      return;
+    }
 
     // Only act during off-hours or lunch break
     const lunchNow = isLunchBreak();
     // Durante el almuerzo también respondemos a usuarios; fuera del almuerzo solo si es fuera de horario
-    if (!isOffHours() && !lunchNow) return;
+    const offNow = isOffHours();
+    if (!offNow && !lunchNow) {
+      if (isGroup) console.log('[reactive] En horario, no se responde. JID:', remoteJid);
+      return;
+    }
 
     // One-per-group-per-day gating for groups (reactive only)
     if (isGroup) {
       ensureReactiveGroupsForToday();
-      if (repliedGroupsReactiveForDay.set.has(remoteJid)) return;
+      if (repliedGroupsReactiveForDay.set.has(remoteJid)) {
+        console.log('[reactive] Grupo ya respondió hoy, omitiendo:', remoteJid);
+        return;
+      }
     }
 
     // Per-chat cooldown (usuarios 60s, grupos 5min)
     const now = Date.now();
     const until = cooldownUntil.get(remoteJid) || 0;
-    if (now < until) return;
+    if (now < until) {
+      if (isGroup) console.log('[reactive] En cooldown hasta', new Date(until).toISOString(), 'JID:', remoteJid);
+      return;
+    }
 
     // Guard durante el delay: evita programar dos envíos en paralelo para el mismo chat
     const respUntil = respondingUntil.get(remoteJid) || 0;
-    if (now < respUntil) return;
+    if (now < respUntil) {
+      if (isGroup) console.log('[reactive] Ya hay un envío programado para este grupo. JID:', remoteJid, 'hasta', new Date(respUntil).toISOString());
+      return;
+    }
     const delayMs = isGroup ? DELAY_GROUP_MS : DELAY_USER_MS;
     respondingUntil.set(remoteJid, now + delayMs + 1000); // delay + margen
 
     try {
       await sleep(delayMs);
       const messageToSend = lunchNow ? LUNCH_MESSAGE : OFF_HOURS_MESSAGE;
+      if (isGroup) console.log('[reactive] Enviando a grupo con delay(ms)=', delayMs, 'JID:', remoteJid);
       await sock.sendMessage(remoteJid, { text: messageToSend });
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
@@ -191,6 +209,13 @@ function ensureRepliedGroupsForToday() {
   const dayKey = nyDayKey();
   if (!repliedGroupsForDay || repliedGroupsForDay.dayKey !== dayKey) {
     repliedGroupsForDay = { dayKey, set: new Set() };
+  }
+}
+
+function ensureReactiveGroupsForToday() {
+  const dayKey = nyDayKey();
+  if (!repliedGroupsReactiveForDay || repliedGroupsReactiveForDay.dayKey !== dayKey) {
+    repliedGroupsReactiveForDay = { dayKey, set: new Set() };
   }
 }
 
