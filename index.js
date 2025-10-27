@@ -17,31 +17,6 @@ const processedMessageIds = new Set(); // msg.key.id
 const cooldownUntil = new Map(); // remoteJid -> epoch ms
 const respondingUntil = new Map(); // remoteJid -> epoch ms (lock during delay)
 let preparedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', jids: string[] }
-
-// Helper: send text with small retry for transient timeouts on serverless platforms
-async function sendTextWithRetry(sock, remoteJid, text, retries = 2) {
-  let attempt = 0;
-  let lastErr;
-  while (attempt <= retries) {
-    try {
-      return await sock.sendMessage(remoteJid, { text });
-    } catch (e) {
-      lastErr = e;
-      const msg = String(e && (e.message || e));
-      // Retry on transient issues
-      if (/Timed Out|timeout|connection|socket/i.test(msg)) {
-        const wait = Math.min(2000 * (attempt + 1), 6000);
-        console.warn(`[send-retry] intento ${attempt + 1} falló (${msg}). Reintentando en ${wait}ms...`);
-        await sleep(wait);
-        attempt++;
-        continue;
-      }
-      break;
-    }
-  }
-  console.error('[send-retry] fallo definitivo al enviar a', remoteJid, lastErr);
-  throw lastErr;
-}
 let repliedGroupsReactiveForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> }
 let repliedGroupsForDay = null; // { dayKey: 'YYYYMMDD-NY', set: Set<string> } (broadcast tracking only)
 let prepareTimer = null;
@@ -71,15 +46,13 @@ function isOffHours() {
 
 function isLunchBreak() {
   const h = getHourInTimeZone('America/New_York');
-  return h >= 12 && h < 14;
+  return h >= 14 && h < 16;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function start() {
-  const isRender = !!process.env.RENDER || !!process.env.RENDER_EXTERNAL_URL;
-  const sessionsDir = process.env.SESSIONS_DIR || (isRender ? '/data/sessions-offhours' : 'sessions-offhours');
-  try { fs.mkdirSync(sessionsDir, { recursive: true }); } catch {}
+  const sessionsDir = process.env.SESSIONS_DIR || 'sessions-offhours';
   const { state, saveCreds } = await useMultiFileAuthState(sessionsDir);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -154,6 +127,7 @@ async function start() {
 
     if (!text || !String(text).trim()) {
       if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
+      return;
     }
 
     // If group whitelist is active, skip early when group is not allowed
@@ -166,6 +140,11 @@ async function start() {
     const lunchNow = isLunchBreak();
     // Durante el almuerzo también respondemos a usuarios; fuera del almuerzo solo si es fuera de horario
     const offNow = isOffHours();
+    if (isGroup) {
+      const hh = getHourInTimeZone('America/New_York');
+      const wl = whitelist.size > 0 ? whitelist.has(remoteJid) : true;
+      console.log(`[reactive] flags JID=${remoteJid} hour=${hh} off=${offNow} lunch=${lunchNow} whitelisted=${wl}`);
+    }
     if (!offNow && !lunchNow) {
       if (isGroup) console.log('[reactive] En horario, no se responde. JID:', remoteJid);
       return;
@@ -201,7 +180,7 @@ async function start() {
       await sleep(delayMs);
       const messageToSend = lunchNow ? LUNCH_MESSAGE : OFF_HOURS_MESSAGE;
       if (isGroup) console.log('[reactive] Enviando a grupo con delay(ms)=', delayMs, 'JID:', remoteJid);
-      await sendTextWithRetry(sock, remoteJid, messageToSend);
+      await sock.sendMessage(remoteJid, { text: messageToSend });
       const cd = isGroup ? COOLDOWN_GROUP_MS : COOLDOWN_USER_MS;
       cooldownUntil.set(remoteJid, Date.now() + cd);
       if (isGroup) {
@@ -298,7 +277,7 @@ async function sendOffHoursToPreparedGroups(sock) {
       continue;
     }
     try {
-      await sendTextWithRetry(sock, jid, OFF_HOURS_MESSAGE);
+      await sock.sendMessage(jid, { text: OFF_HOURS_MESSAGE });
       // Marca como respondido por el día para evitar duplicados posteriores
       ensureRepliedGroupsForToday();
       repliedGroupsForDay.set.add(jid);

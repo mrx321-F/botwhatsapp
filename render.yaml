@@ -1,13 +1,9 @@
 services:
   - type: web
     name: offhours-whatsapp-bot
-    rootDir: .
+    rootDir: offhours-bot
     env: node
     plan: free
     buildCommand: npm ci
     startCommand: npm start
     autoDeploy: true
-    disk:
-      name: sessions-data
-      mountPath: /data
-      sizeGB: 1
