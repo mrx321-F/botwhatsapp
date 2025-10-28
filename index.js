@@ -30,6 +30,7 @@ let latestQRDataUrl = null; // data:image/png;base64,...
 let currentSock = null; // reference to active socket for admin API
 let whitelist = new Set(); // group jids allowed; empty => no restriction
 let lastGroupsCache = { dayKey: null, list: [] }; // cache of { id, name }
+const GROUP_TRIGGER_MODE = (process.env.GROUP_TRIGGER_MODE || 'text').toLowerCase(); // 'text' | 'any'
 
 function getHourInTimeZone(tz = 'America/New_York') {
   // robust hour extraction independent of server TZ
@@ -41,7 +42,7 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 12 || h >= 18;
+  return h < 8 || h >= 18;
 }
 
 function isLunchBreak() {
@@ -125,11 +126,6 @@ async function start() {
       || msg.message?.ephemeralMessage?.message?.videoMessage?.caption
       || '';
 
-    if (!text || !String(text).trim()) {
-      if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
-      return;
-    }
-
     // If group whitelist is active, skip early when group is not allowed
     if (isGroup && whitelist.size > 0 && !whitelist.has(remoteJid)) {
       console.log('[reactive] Grupo no permitido por whitelist:', remoteJid);
@@ -148,6 +144,16 @@ async function start() {
     if (!offNow && !lunchNow) {
       if (isGroup) console.log('[reactive] En horario, no se responde. JID:', remoteJid);
       return;
+    }
+
+    // Text gating with fallback for groups in whitelist during valid windows
+    const allowAny = isGroup && GROUP_TRIGGER_MODE === 'any' && whitelist.size > 0 && whitelist.has(remoteJid) && (offNow || lunchNow);
+    if (!text || !String(text).trim()) {
+      if (!allowAny) {
+        if (isGroup) console.log('[reactive] Ignorado por texto vacío en grupo:', remoteJid);
+        return;
+      }
+      console.log('[reactive] Sin texto pero modo any activo y en ventana válida; se responderá al grupo:', remoteJid);
     }
 
     // One-per-group-per-day gating for groups (reactive only)
