@@ -42,7 +42,7 @@ function getHourInTimeZone(tz = 'America/New_York') {
 function isOffHours() {
   // Service window: 08:00 <= time < 18:00 local (Florida)
   const h = getHourInTimeZone('America/New_York');
-  return h < 8 || h >= 18;
+  return h < 12 || h >= 18;
 }
 
 function isLunchBreak() {
