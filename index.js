@@ -46,7 +46,7 @@ function isOffHours() {
 
 function isLunchBreak() {
   const h = getHourInTimeZone('America/New_York');
-  return h >= 12 && h < 14;
+  return h >= 12 && h < 16;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -59,7 +59,7 @@ async function start() {
   const sock = makeWASocket({
     version,
     auth: state,
-    browser: ['OffHours Bot', 'Chrome', '1.0.0']
+    browser: ['AION OffHours waClient', 'Chrome', '1.0.0']
   });
   currentSock = sock;
 
